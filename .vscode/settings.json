@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "sprintf.h": "c",
+        "type_traits": "c",
+        "basicio.h": "c"
+    },
+    "files.autoGuessEncoding": true
+}

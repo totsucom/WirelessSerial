@@ -1,0 +1,33 @@
+Ver.2.1への変更点
+
+1.バージョン定数
+ + BASICIO_MAJOR_VER = 2
+ + BASICIO_MINOR_VER = 10
+
+2.シリアル0 のハードウェアフロー制御をソフトウェアで初期化できるようにし、使用するタイマーも選択できるようにした。
+ + SERIAL_HW_FLOW_CONTROL 定数の廃止
+ + serial_initEx() のパラメータを変更
+ + serial_init() のパラメータを変更
+
+3.DO0, DO1への出力関数を準備した。これでモノスティックの黄色LEDにアクセスできる
+ do_enable(), do_write() 関数を追加。
+
+4.タイマー2,3のPWM,DAC出力をDO0,DO1に変更できるため、対応した。
+ timer_attachPWM(), timer_attachPWMByHzDuty(), timer_attachAnalogWrite() 関数のパラメータを変更
+
+5.rand()の名称がC標準関数とダブるのでrandom()に変更した。
+
+6.前回追加したけどいまいちだったled_XXX関数群を削除
+
+7.バグフィックス
+ + 無線送信関数のパケットサイズを108バイトとしていたが、マニュアルに依れば92バイトっぽいので修正。
+ + radio_printf() v2.0 の返り値の型間違いを修正 bool_t → int16_t
+ + Compile warning message 対応
+
+
+
+APPIDやCHはウェイクで変更できるのか？
+
+無線でブロードキャストの再送ありの場合で連続送信した場合、
+IDが 1,2,1,2 と交互に送信されて、受信側ですべて受け取ってしまう問題
+
