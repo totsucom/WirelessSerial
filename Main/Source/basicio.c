@@ -2,7 +2,7 @@
  * basicio.h
  * バージョン 2.0 +
  * 非公開版
-s */
+ */
 
 #include "basicio.h"
 
@@ -13,7 +13,7 @@ s */
 //#include <string.h>
 #include <stdarg.h>
 
-static bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap);
+bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap);
 
 //__printf()用書き込み補助関数
 static char *__printf_putc_ptr;
@@ -37,6 +37,10 @@ static uint32_t millisValueTick;
 //ミリ秒を計測するカウントアップタイマー。カウントアップ値はTICK_TIMERによる。デフォルト4ms。
 uint32_t millis() {
     return millisValue;
+}
+
+uint32_t getTickPeriod() {
+    return millisValueTick;
 }
 
 
@@ -179,7 +183,8 @@ bool_t sb_printf(const char *fmt, ...) {
 }
 
 const char *sb_getBuffer() {
-    *(__sb_ptr + 1) = '\0';
+    //*(__sb_ptr + 1) = '\0';
+    *__sb_ptr = '\0';
     return __sb_buf;
 }
 #endif
@@ -970,7 +975,7 @@ static void serial0UpdateRxBuffer() {
     }
 }
 
-//シリアル0でバッファフルなどによる欠落が発生したか
+//シリアル0で受信バッファフルなどによる欠落が発生したか
 bool_t serial_dataLost() {
     serial0StatusBit |= u8AHI_UartReadLineStatus(E_AHI_UART_0); //フラグ合成
 
@@ -1120,7 +1125,7 @@ bool_t serial1_initEx(SERIALBAUD baudRate, SERIALPARITY parity, SERIALBITLENGTH 
     return TRUE;
 }
 
-//シリアル1でバッファフルなどによる欠落が発生したか
+//シリアル1で受信バッファフルなどによる欠落が発生したか
 bool_t serial1_dataLost() {
     serial1StatusBit |= u8AHI_UartReadLineStatus(E_AHI_UART_1); //フラグ合成
     bool_t b = (serial1StatusBit & E_AHI_UART_LS_OE);
@@ -2239,6 +2244,9 @@ static void (*radioTxCallbackFunction)(uint8_t, bool_t);
 //受信割り込みルーチンのポインタを保持
 static void (*radioRxCallbackFunction)(uint32_t, bool_t, uint8_t, uint8_t, uint8_t *, uint8_t, uint8_t);
 
+//受信重複判定のコールバック関数へのポインタを保持
+static bool_t (*radioRxDuplicateJudgementCallbackFunction)(uint32_t, uint8_t);
+
 //送信シーケンス番号を保持
 static uint8_t u8RadioSeqNo;
 
@@ -2251,8 +2259,24 @@ static uint8_t u8RadioRetryCount;
 //再送間隔
 static uint16_t u16RadioRetryDuration;
 
-//自分のシュートアドレス。未使用時 0xFFFF
+//自分の12bitショートアドレス。未使用時 0xFFFF
 static uint16_t u16MyShortAddress;
+
+//送信IDを強制的に指定する。未使用時-1
+static int16_t i16RadioNextCbId;
+
+//送信ディレイを強制的に指定する。未使用時-1
+static int32_t i32RadioNextDelayMin = -1;
+static int32_t i32RadioNextDelayMax = -1;
+
+//重複受信回避用の構造体
+typedef struct {
+    uint32_t u32SrcAddr; //0:未使用
+    uint32_t u32Millis;
+    uint8_t u8seq;
+} RADIORECEIVEHISTORY;
+#define RADIORECEIVEHISTRY_BUFSIZE 5
+static RADIORECEIVEHISTORY radioReceiveHistory[RADIORECEIVEHISTRY_BUFSIZE];
 
 
 //setup()関数内で使用すること
@@ -2275,8 +2299,9 @@ bool_t radio_setupInit(RADIOMODE mode, uint32_t appid, uint8_t channel, uint8_t 
     return TRUE;
 }
 
+//アドレスは12ビット(0x000～0xFFF)です。
 void radio_setupShortAddress(uint16_t u16ShortAddress) {
-	sToCoNet_AppContext.u16ShortAddress = (u16ShortAddress == 0xFFFF) ? 0 : u16ShortAddress;
+	sToCoNet_AppContext.u16ShortAddress = u16ShortAddress;
     u16MyShortAddress = u16ShortAddress;
 }
 
@@ -2290,7 +2315,18 @@ bool_t radio_setRetry(uint8_t retryCount, uint16_t retryDuration) {
     return TRUE;
 }
 
-//送信中のデータ数
+//次の送信関数実行時の送信IDを強制的に指定します
+void radio_setCbId(uint8_t u8CbId) {
+    i16RadioNextCbId = u8CbId;
+}
+
+//次の送信関数実行時の送信ディレイ時間を強制的に指定します
+void radio_setDelay(uint8_t u16DelayMin, uint8_t u16DelayMax) {
+    i32RadioNextDelayMin = u16DelayMin;
+    i32RadioNextDelayMax = u16DelayMax;
+}
+
+//送信中のパケット数
 uint8_t radio_txCount() {
     return u8NumRadioTx;
 }
@@ -2300,19 +2336,14 @@ void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void 
     radioTxCallbackFunction = txFunc;
     radioRxCallbackFunction = rxFunc;
 }
-/*
-//無線送信完了割り込みルーチンを設定する
-void radio_attachTxCallback(void (*func)(uint8_t u8CbId, bool_t bSuccess)) {
-    radioTxCallbackFunction = func;
+
+//無線受信時の重複受信回避処理をユーザーコールバック関数に置き換える
+//ユーザーコールバック関数は受信を許可したときにTRUEを返す
+//ユーザーコールバック関数のポンタにNULLを渡したときはデフォルトの重複受信回避アルゴリズムが使用される
+void radio_replaceRxDupJudgeCallback(bool_t (*judgeFunc)(uint32_t u32SrcAddr, uint8_t u8CbId)) {
+    radioRxDuplicateJudgementCallbackFunction = judgeFunc;
 }
 
-#ifdef USE_RADIO
-//無線受信割り込みルーチンを設定する
-void radio_attachRxCallback(void (*func)(uint32_t u32SrcAddr, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi)) {
-    radioRxCallbackFunction = func;
-}
-#endif
-*/
 
 //無線で特定の相手に送信する
 //basicio_module.hでUSE_RADIOを宣言し、送信モジュールと同じAPP_ID,CHANNELに設定したモジュールかつ、関数の引数でu32DistAddrに指定したモジュールが受信できる
@@ -2339,12 +2370,18 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t u8DataType, uint8_t *pu8Data, 
             maxDataLength = 104;
         } else {
             //⇒ロングアドレス
-            return -1;
+            return -1;  //自分がショートアドレスの時、ロングアドレスには送信できない
         }
     }
     if (u8Length > maxDataLength) return -1;
 
     u8RadioSeqNo++;
+
+    if (i16RadioNextCbId != -1 && i16RadioNextCbId == (u8RadioSeqNo + 1)) {
+        //送信IDを強制指定しているときで、次回の送信時の自動生成送信ID(u8RadioSeqNo)と値がダブる場合、
+        //次回の送信が相手先で拒否される可能性があるので、ダブらないように値をずらす
+        u8RadioSeqNo++;
+    }
 
     tsTxDataApp tsTx;
     memset(&tsTx, 0, sizeof(tsTxDataApp));
@@ -2353,15 +2390,33 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t u8DataType, uint8_t *pu8Data, 
     tsTx.u32DstAddr = u32DestAddr;                  //送信先アドレス
 
 	tsTx.u8Cmd = u8DataType;                        //データ種別 (0..7)。データの簡易識別子。
-	tsTx.u8Seq = u8RadioSeqNo; 		                //シーケンス番号(複数回送信時に、この番号を調べて重複受信を避ける)
 	tsTx.u8Len = u8Length; 		                    //データ長
-	tsTx.u8CbId = u8RadioSeqNo;	                    //送信識別ID。送信完了イベントの引数として渡され、送信イベントとの整合を取るために使用する
+
+    if (i16RadioNextCbId == -1) {
+    	tsTx.u8Seq = u8RadioSeqNo; 		            //シーケンス番号(複数回送信時に、この番号を調べて重複受信を避ける)
+	    tsTx.u8CbId = u8RadioSeqNo;	                //送信識別ID。送信完了イベントの引数として渡され、送信イベントとの整合を取るために使用する
+        //受信側ではu8CbIdを受け取れないので、u8Seqと同じ値を用いる
+    }
+    else {
+    	tsTx.u8CbId = (uint8_t)i16RadioNextCbId;    //送信IDを強制指定
+    	tsTx.u8Seq = (uint8_t)i16RadioNextCbId;     //
+        i16RadioNextCbId = -1;
+    }
     memcpy(tsTx.auData, pu8Data, u8Length);
 
 	tsTx.bAckReq = (u32DestAddr != TOCONET_MAC_ADDR_BROADCAST); //TRUE Ack付き送信を行う
-	tsTx.u8Retry = u8RadioRetryCount | 0x80;  		//MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
+	tsTx.u8Retry = u8RadioRetryCount;  		        //MACによるAck付き送信失敗時に、さらに再送する場合(ToCoNet再送)の再送回数
 
 	//tsTx.u16ExtPan = 0;                           //0:外部PANへの送信ではない 1..0x0FFF: 外部PANへの送信 (上位4bitはリザーブ)
+
+    if (i32RadioNextDelayMin >= 0 && i32RadioNextDelayMax >= 0) {
+        tsTx.u16DelayMin = (uint16_t)i32RadioNextDelayMin;
+        tsTx.u16DelayMax = (uint16_t)i32RadioNextDelayMax;
+
+        i32RadioNextDelayMin = -1;
+        i32RadioNextDelayMax = -1;
+    }
+
 
 	//tsTx.u16DelayMax = 0;                         //送信開始までのディレー(最大)[ms]。指定しない場合は 0 にし、指定する場合は Min 以上にすること。
 	//tsTx.u16DelayMin = 0;                         //送信開始までのディレー(最小)[ms]
@@ -2379,7 +2434,6 @@ int16_t radio_write(uint32_t u32DestAddr, uint8_t u8DataType, uint8_t *pu8Data, 
         return -1;
     }
 }
-
 
 //radio_write()の簡易版
 //関数はエラーで-1、送信開始で8bitの送信Id(u8CbId)を返す。これは送信完了コールバックで送信データの識別に使用される
@@ -2555,19 +2609,6 @@ static void vProcessEvCore(tsEvent *pEv, teEvent eEvent, uint32_t u32evarg)
     }
 }
 
-#ifdef USE_RADIO
-#define RADIORECEIVEHISTRY_BUFSIZE 5
-typedef struct {
-    uint32_t u32SrcAddr; //0:未使用
-    uint32_t u32Millis;
-    uint8_t u8seq;
-} RADIORECEIVEHISTORY;
-RADIORECEIVEHISTORY radioReceiveHistory[RADIORECEIVEHISTRY_BUFSIZE];
-//static uint32_t u32SrcAddrPrev;
-//static uint32_t u32MillisPrev;
-//static uint8_t u8seqPrev;
-#endif
-
 //変数や構造体を初期化
 void resetVars()
 {
@@ -2631,11 +2672,11 @@ void resetVars()
     u8RadioRetryCount = 2;
     u16RadioRetryDuration = 10;
     u16MyShortAddress = 0xFFFF;
-
+    i16RadioNextCbId = -1;
+    i32RadioNextDelayMin = -1;
+    i32RadioNextDelayMax = -1;
     memset(radioReceiveHistory, 0, sizeof(radioReceiveHistory));
-    //u32SrcAddrPrev = 0;
-    //u32MillisPrev = 0;
-    //u8seqPrev = 255;
+    radioRxDuplicateJudgementCallbackFunction = NULL;
 #endif
 
     millisValue = 0;
@@ -2683,12 +2724,12 @@ void initAppContext()
 
 	//uint8_t u8TxMacRetry; 		//!< MAC層の再送回数 7..0 を指定する。(規定値は3, Nwk層では１を推奨)
 	//bool_t bPromiscuousMode; 	//!< テスト受信モード。通常は設定してはいけません (規定値は FALSE)
-	//bool_t bSkipBootCalib;		//!< 始動時のキャリブレーション処理を省略する
+	sToCoNet_AppContext.bSkipBootCalib = TRUE;		//!< 始動時のキャリブレーション処理を省略する
 	//uint8 u8Osc32Kmode; 		//!< 32K 水晶のモード (0x00: RC, 0x02: 32K水晶, 0x03: 32K発振器)
 	//uint8 u8CCA_Retry; 			//!< CCA のリトライ回数 (通常は変更しない)
 	//uint8 u8CCA_Level; 			//!< CCA アルゴリズムの開始レベル (通常は変更しない)
 
-	//bool_t bNoAckMode;			//!< Ack を一切返さない。起動時の設定のみ反映され、起動後は変更できない。(通常は変更しない)
+	sToCoNet_AppContext.bNoAckMode = FALSE;			//!< Ack を一切返さない。起動時の設定のみ反映され、起動後は変更できない。(通常は変更しない)
 	//bool_t bRxExtPan;			//!< 他のPANからのパケットを受信する (1.0.8)
 
 	sToCoNet_AppContext.u8RandMode = 3; //!< 乱数生成方法の指定。0:ハード 1:システム経過時間を元に生成 2:MT法 3:XorShift法 (32kOscモードで外部水晶が利用されたときは 0 の場合 XorShift 方を採用する)
@@ -2869,50 +2910,59 @@ void cbToCoNet_vNwkEvent(teEvent eEvent, uint32_t u32arg)
 void cbToCoNet_vRxEvent(tsRxDataApp *pRx)
 {
 #ifdef USE_RADIO
-    uint32_t oldestTimePassed = 0;
-    int8_t oldestIndex = -1;
-    int8_t emptyIndex = -1;
-    uint8_t i;
-    for (i=0; i<RADIORECEIVEHISTRY_BUFSIZE; i++) {
-        if (radioReceiveHistory[i].u32SrcAddr != 0) {
-            uint32_t timePassed = millis() - radioReceiveHistory[i].u32Millis;
-            if (timePassed > 100) {
-                //100ms経過した履歴は無効
-                radioReceiveHistory[i].u32SrcAddr = 0;
+#define RADIO_CBID_LIFESPAN 100 //[ms]
+
+    if (radioRxDuplicateJudgementCallbackFunction != NULL) {
+        //ユーザーによる重複受信回避処理
+        if (!(*radioRxDuplicateJudgementCallbackFunction)(pRx->u32SrcAddr, pRx->u8Seq)) return;
+    }
+    else {
+        //デフォルトの重複受信回避処理
+
+        //100ms以内に受信した送信元アドレスと送信IDを5つまで保持し
+        //重複受信を回避している
+
+        uint32_t oldestTimePassed = 0;  //RADIO_ID_TIME_LIMIT以内で最も古い履歴の経過時間
+        int8_t oldestIndex = -1;        //RADIO_ID_TIME_LIMIT以内で最も古い履歴のインデックス
+        int8_t emptyIndex = -1;         //空データのインデックス
+        uint8_t i;
+        for (i=0; i<RADIORECEIVEHISTRY_BUFSIZE; i++) {
+            if (radioReceiveHistory[i].u32SrcAddr != 0) {
+                uint32_t timePassed = millis() - radioReceiveHistory[i].u32Millis;
+                if (timePassed > RADIO_CBID_LIFESPAN) {
+                    //一定時間経過した履歴は無効、削除する
+                    radioReceiveHistory[i].u32SrcAddr = 0;
+                    emptyIndex = i;
+                }
+                else if (radioReceiveHistory[i].u32SrcAddr == pRx->u32SrcAddr &&
+                    radioReceiveHistory[i].u8seq == pRx->u8Seq) {
+                    //このパケットは受信済み
+
+                    //受信時刻を更新する
+                    radioReceiveHistory[i].u32Millis = millis();
+                    return;
+                }
+                else if (timePassed > oldestTimePassed) {
+                    //有効な履歴
+
+                    //そのなかでも古い履歴なので記憶
+                    oldestTimePassed = timePassed;
+                    oldestIndex = i;
+                }
+            } else {
+                //配列は使用されていない
                 emptyIndex = i;
             }
-            else if (radioReceiveHistory[i].u32SrcAddr == pRx->u32SrcAddr &&
-                radioReceiveHistory[i].u8seq == pRx->u8Seq) {
-
-                //受信済み
-                radioReceiveHistory[i].u32Millis = millis();
-                return;
-            }
-            else if (timePassed > oldestTimePassed) {
-                //100ms内でも、そのなかでも古いデータインデックスを記憶
-                oldestTimePassed = timePassed;
-                oldestIndex = i;
-            }
         }
-        else {
-            emptyIndex = i;
-        }
-    }
-    i = (emptyIndex >= 0) ? emptyIndex : oldestIndex;
-    radioReceiveHistory[i].u32SrcAddr = pRx->u32SrcAddr;
-    radioReceiveHistory[i].u32Millis = millis();
-    radioReceiveHistory[i].u8seq = pRx->u8Seq;
 
-/*
-    // 前回と同一の送信元＋シーケンス番号かつ、100ms未満のパケットなら無視
-    // 時間を考慮したのは、送信側がRAM OFFでスリープから起きると、常にu8Seqが1になってしまうため、うまく受信できない
-    if (pRx->u32SrcAddr == u32SrcAddrPrev && pRx->u8Seq == u8seqPrev) {
-        if (u32MillisPrev != 0 && (millis() - u32MillisPrev) < 100) return;
+        //空があればそこに履歴を書き込むが、そうでない場合は
+        //最も古い履歴に上書き更新する。
+        i = (emptyIndex >= 0) ? emptyIndex : oldestIndex;
+        radioReceiveHistory[i].u32SrcAddr = pRx->u32SrcAddr;
+        radioReceiveHistory[i].u32Millis = millis();
+        radioReceiveHistory[i].u8seq = pRx->u8Seq;
     }
-    u32SrcAddrPrev = pRx->u32SrcAddr;
-    u32MillisPrev = millis();
-    u8seqPrev = pRx->u8Seq;
-*/
+
     if (radioRxCallbackFunction != NULL) {
         //受信ルーチンを呼び出す
         (*radioRxCallbackFunction)(pRx->u32SrcAddr, pRx->u32DstAddr == RADIO_ADDR_BROADCAST, pRx->u8Seq, pRx->u8Cmd, pRx->auData, pRx->u8Len, pRx->u8Lqi);
@@ -3296,7 +3346,7 @@ static bool_t put_integerB(bool_t (*__putc)(char), uint64_t n, int32_t length, u
 
 //__putc()がFALSEを返したときに__printf()もFALSEを返す
 //末尾の'\0'は書き込まない
-static bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
+bool_t __printf(bool_t (*__putc)(char), const char *fmt, va_list ap) {
     //va_list ap;
     //va_start(ap, fmt);
 

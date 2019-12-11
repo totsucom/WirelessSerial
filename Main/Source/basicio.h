@@ -197,6 +197,7 @@ typedef enum {
 
 
 extern uint32_t millis();
+extern uint32_t getTickPeriod();
 
 
 //32bit乱数を生成
@@ -834,8 +835,11 @@ typedef enum {
 extern bool_t radio_setupInit(RADIOMODE mode, uint32_t appid, uint8_t channel, uint8_t txPower);
 extern void radio_setupShortAddress(uint16_t u16ShortAddress);
 extern bool_t radio_setRetry(uint8_t retryCount, uint16_t retryDuration);
+extern void radio_setCbId(uint8_t u8CbId);
+extern void radio_setDelay(uint8_t u16DelayMin, uint8_t u16DelayMax);
 
 extern void radio_attachCallback(void (*txFunc)(uint8_t u8CbId, bool_t bSuccess), void (*rxFunc)(uint32_t u32SrcAddr, bool_t bBroadcast, uint8_t u8CbId, uint8_t u8DataType, uint8_t *pu8Data, uint8_t u8Length, uint8_t u8Lqi));
+extern void radio_replaceRxDupJudgeCallback(bool_t (*judgeFunc)(uint32_t u32SrcAddr, uint8_t u8CbId));
 #define radio_detach()          radio_attachCallback(NULL, NULL)
 
 /*

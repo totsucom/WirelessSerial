@@ -10,9 +10,9 @@
  * 機能のON/OFF
  */
 #define USE_DIO           //ＤＩＯ関数を使用する
-//#define USE_TIMER         //タイマー系（タイマー、ＰＷＭなど）関数を使用する
+#define USE_TIMER         //タイマー系（タイマー、ＰＷＭなど）関数を使用する
 #define USE_SERIAL        //シリアル0関数を使用する
-//#define USE_SERIAL1       //シリアル1関数を使用する
+#define USE_SERIAL1       //シリアル1関数を使用する
 //#define USE_ADC           //ADC関数を使用する
 //#define USE_COMP          //コンパレータ関数を使用する
 //#define USE_PC            //パルスカウンタ関数を使用する
@@ -23,7 +23,7 @@
 //#define USE_EEPROM        //EEPROMを使用する
 //#define USE_FLASH         //フラッシュメモリを使用する
 //#define USE_PBUTIL        //プッシュボタン補助関数 pb_XXX を使用する
-//#define USE_SBUTIL        //文字列バッファ補助関数 sb_XXX を使用する
+#define USE_SBUTIL        //文字列バッファ補助関数 sb_XXX を使用する
 
 
 
@@ -46,8 +46,8 @@
 
 
 /* シリアル1 オプション */
-//#define SERIAL1_TX_BUFFER_SIZE 96 //送信バッファの大きさ。16～2047(規定値:96)
-//#define SERIAL1_RX_BUFFER_SIZE 32 //受信バッファの大きさ。16～2047(規定値:32)
+#define SERIAL1_TX_BUFFER_SIZE 2047 //送信バッファの大きさ。16～2047(規定値:96)
+#define SERIAL1_RX_BUFFER_SIZE 16 //受信バッファの大きさ。16～2047(規定値:32)
 
 
 /* I2Cスレーブ オプション */
@@ -78,5 +78,5 @@
  * loop()のEVENT_TICK_TIMERイベント周期を決定
  * 規定値は250=4ms, 1000を割り切れる値にすること。事実上 1ms:1000, 2ms:500, 4ms:250, 5ms:200, 10ms:100 のみ
  */
-//#define	TICK_COUNT  250 // 4ms
+#define	TICK_COUNT  1000 // 1ms
 

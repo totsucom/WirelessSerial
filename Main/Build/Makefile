@@ -46,6 +46,11 @@ include ../Version.mk
 #   ../Common/Source
 #
 #APPSRC += $(TARGET_DIR).c
+APPSRC += signal.c
+APPSRC += setting.c
+APPSRC += radioTx.c
+APPSRC += radioRx.c
+APPSRC += debug.c
 APPSRC += basicio.c
 APPSRC += main.c
 
